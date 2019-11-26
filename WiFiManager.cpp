@@ -12,6 +12,79 @@
 
 #include "WiFiManager.h"
 
+void WiFiManager::serveConfigPortal() {
+  server.reset(new ESP8266WebServer(80));
+  /* Ben bind custom events*/
+  for (int i = 0; i < _funcsCount; i++) {
+    if (_funcs[i] == NULL) {
+      break;
+    }
+    String query = String('/') + String(_funcs[i]->getUrl());
+    //server->on(query, _funcs[i]->_func);
+    server->on(query.c_str(), std::bind(&WiFiManager::functionCallback, this, _funcs[i]));
+  }
+
+  /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
+  server->on(String(F("/")).c_str(), std::bind(&WiFiManager::handleRoot, this));
+  server->on(String(F("/wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, true));
+  server->on(String(F("/0wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, false));
+  server->on(String(F("/wifisave")).c_str(), std::bind(&WiFiManager::handleWifiSave, this));
+  server->on(String(F("/i")).c_str(), std::bind(&WiFiManager::handleInfo, this));
+  server->on(String(F("/r")).c_str(), std::bind(&WiFiManager::handleReset, this));
+  //server->on("/generate_204", std::bind(&WiFiManager::handle204, this));  //Android/Chrome OS captive portal check.
+  server->on(String(F("/fwlink")).c_str(), std::bind(&WiFiManager::handleRoot, this));  //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+  server->onNotFound (std::bind(&WiFiManager::handleNotFound, this));
+  server->begin(); // Web server start
+  DEBUG_WM(F("HTTP server started"));
+
+  while(1) {
+    //HTTP
+    server->handleClient();
+    }
+  }
+
+void WiFiManager::functionCallback(WiFiManagerFunction *f) {
+    f->_func();
+    handleRoot();
+  }
+
+WiFiManagerFunction::WiFiManagerFunction(const char *url, const char *displayText, void (*func)()) {
+  _url = url;
+  _displayText = displayText;
+  _func = func;
+}
+
+const char* WiFiManagerFunction::getUrl() {
+  return _url;
+}
+
+const char* WiFiManagerFunction::getDisplayText() {
+  return _displayText;
+}
+
+bool WiFiManager::addFunction(WiFiManagerFunction *f) {
+  if(_funcsCount + 1 > _max_funcs)
+  {
+    // rezise the params array
+    _max_funcs += WIFI_MANAGER_MAX_FUNCS;
+    DEBUG_WM(F("Increasing _max_funcs to:"));
+    DEBUG_WM(_max_funcs);
+    WiFiManagerFunction** new_funcs = (WiFiManagerFunction**)realloc(_funcs, _max_funcs * sizeof(WiFiManagerFunction*));
+    if (new_funcs != NULL) {
+      _funcs = new_funcs;
+    } else {
+      DEBUG_WM(F("ERROR: failed to realloc funcs, size not increased!"));
+      return false;
+    }
+  }
+
+  _funcs[_funcsCount] = f;
+  _funcsCount++;
+  DEBUG_WM(F("Adding func"));
+  DEBUG_WM(f->getDisplayText());
+  return true;
+}
+
 WiFiManagerParameter::WiFiManagerParameter(const char *custom) {
   _id = NULL;
   _placeholder = NULL;
@@ -66,10 +139,13 @@ const char* WiFiManagerParameter::getCustomHTML() {
   return _customHTML;
 }
 
-
 WiFiManager::WiFiManager() {
     _max_params = WIFI_MANAGER_MAX_PARAMS;
     _params = (WiFiManagerParameter**)malloc(_max_params * sizeof(WiFiManagerParameter*));
+
+    //ben add funcs
+    _max_funcs = WIFI_MANAGER_MAX_FUNCS;
+    _funcs = (WiFiManagerFunction**)malloc(_max_funcs * sizeof(WiFiManagerFunction*));
 }
 
 WiFiManager::~WiFiManager()
@@ -78,6 +154,13 @@ WiFiManager::~WiFiManager()
     {
         DEBUG_WM(F("freeing allocated params!"));
         free(_params);
+    }
+
+    //ben add funcs
+    if (_funcs != NULL)
+    {
+        DEBUG_WM(F("freeing allocated funcs!"));
+        free(_funcs);
     }
 }
 
@@ -141,6 +224,16 @@ void WiFiManager::setupConfigPortal() {
   /* Setup the DNS server redirecting all the domains to the apIP */
   dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer->start(DNS_PORT, "*", WiFi.softAPIP());
+
+  /* Ben bind custom events*/
+  for (int i = 0; i < _funcsCount; i++) {
+    if (_funcs[i] == NULL) {
+      break;
+    }
+    String query = String('/') + String(_funcs[i]->getUrl());
+    //server->on(query, _funcs[i]->_func);
+    server->on(query.c_str(), std::bind(&WiFiManager::functionCallback, this, _funcs[i]));
+  }
 
   /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
   server->on(String(F("/")).c_str(), std::bind(&WiFiManager::handleRoot, this));
@@ -429,10 +522,24 @@ void WiFiManager::handleRoot() {
   page += _apName;
   page += String(F("</h1>"));
   page += String(F("<h3>WiFiManager</h3>"));
+
+//ben add custom stuff
+  for (int i = 0; i < _funcsCount; i++) {
+    if (_funcs[i] == NULL) {
+      break;
+    }
+    page += "<form action=\"/";
+    page += String(_funcs[i]->getUrl());
+    page += "\" method=\"get\"><button>";
+    page += String(_funcs[i]->getDisplayText());
+    page += "</button></form><br/>";
+  }
+
   page += FPSTR(HTTP_PORTAL_OPTIONS);
   page += FPSTR(HTTP_END);
 
-  server->sendHeader("Content-Length", String(page.length()));
+  //server-send automatically appends Content-Length header, no need to add it again
+  //server->sendHeader("Content-Length", String(page.length()));
   server->send(200, "text/html", page);
 
 }
@@ -586,7 +693,6 @@ void WiFiManager::handleWifi(boolean scan) {
 
   page += FPSTR(HTTP_END);
 
-  server->sendHeader("Content-Length", String(page.length()));
   server->send(200, "text/html", page);
 
 
@@ -644,7 +750,6 @@ void WiFiManager::handleWifiSave() {
   page += FPSTR(HTTP_SAVED);
   page += FPSTR(HTTP_END);
 
-  server->sendHeader("Content-Length", String(page.length()));
   server->send(200, "text/html", page);
 
   DEBUG_WM(F("Sent wifi save page"));
@@ -687,7 +792,6 @@ void WiFiManager::handleInfo() {
   page += F("</dl>");
   page += FPSTR(HTTP_END);
 
-  server->sendHeader("Content-Length", String(page.length()));
   server->send(200, "text/html", page);
 
   DEBUG_WM(F("Sent info page"));
@@ -706,7 +810,6 @@ void WiFiManager::handleReset() {
   page += F("Module will reset in a few seconds.");
   page += FPSTR(HTTP_END);
 
-  server->sendHeader("Content-Length", String(page.length()));
   server->send(200, "text/html", page);
 
   DEBUG_WM(F("Sent reset page"));
@@ -734,6 +837,7 @@ void WiFiManager::handleNotFound() {
   server->sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server->sendHeader("Pragma", "no-cache");
   server->sendHeader("Expires", "-1");
+  //404 doesn't automatically send content-length header
   server->sendHeader("Content-Length", String(message.length()));
   server->send ( 404, "text/plain", message );
 }

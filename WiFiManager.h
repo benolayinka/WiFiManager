@@ -39,6 +39,30 @@ const char HTTP_END[] PROGMEM             = "</div></body></html>";
 #define WIFI_MANAGER_MAX_PARAMS 10
 #endif
 
+#ifndef WIFI_MANAGER_MAX_FUNCS
+#define WIFI_MANAGER_MAX_FUNCS 10
+#endif
+
+#define FUNCTION_STRING_MAX_LENGTH 30
+
+class WiFiManagerFunction {
+    public:
+        WiFiManagerFunction(const char *url, const char *displayText, void (*func)());
+
+        const char* getUrl();
+        const char* getDisplayText();
+        void(*_func)();
+        //typedef void (WiFiManagerFunction::*function)();
+        //function getFunc();
+
+    private:
+        const char* _url;
+        const char* _displayText;
+        
+
+    friend class WifiManager;
+};
+
 class WiFiManagerParameter {
   public:
     /** 
@@ -73,6 +97,11 @@ class WiFiManager
   public:
     WiFiManager();
     ~WiFiManager();
+
+    //adds a custom function, returns false on failure
+    bool          addFunction(WiFiManagerFunction *f);
+    void            functionCallback(WiFiManagerFunction *f);
+    void            serveConfigPortal();
 
     boolean       autoConnect();
     boolean       autoConnect(char const *apName, char const *apPassword = NULL);
@@ -145,6 +174,9 @@ class WiFiManager
     IPAddress     _sta_static_gw;
     IPAddress     _sta_static_sn;
 
+    int           _funcsCount            = 0;
+
+
     int           _paramsCount            = 0;
     int           _minimumQuality         = -1;
     boolean       _removeDuplicateAPs     = true;
@@ -186,6 +218,9 @@ class WiFiManager
 
     int                    _max_params;
     WiFiManagerParameter** _params;
+
+    int                     _max_funcs;
+    WiFiManagerFunction**   _funcs;
 
     template <typename Generic>
     void          DEBUG_WM(Generic text);
